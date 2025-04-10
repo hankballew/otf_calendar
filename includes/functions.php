@@ -6,6 +6,84 @@
 
 
 /**
+ * Updates the recommended_day column for the user so that 
+ * the top-scoring future days (enough to reach 120 total) are marked recommended.
+ */
+function update_recommended_days($user_id, $goal = 120) {
+    $pdo = get_db_connection();
+
+    // 1) Count how many sessions already completed (this year, or overall, up to you).
+    //    Suppose you're only aiming for 120 in this *specific year*:
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) AS completed 
+        FROM daily_records
+        WHERE user_id = :user_id
+          AND gym_attended = 1
+          AND record_date <= '2025-12-31'  -- or YEAR(record_date)=2025 if you only care about that year
+    ");
+    $stmt->execute([':user_id' => $user_id]);
+    $row = $stmt->fetch();
+    $already_attended = $row ? (int)$row['completed'] : 0;
+
+    // 2) Calculate how many are left to meet the 120 goal
+    $remaining_needed = max(0, $goal - $already_attended);
+
+    // If we've already met or exceeded the goal, no days need to be recommended
+    if ($remaining_needed <= 0) {
+        $pdo->prepare("
+            UPDATE daily_records
+            SET recommended_day = 0
+            WHERE user_id = :user_id
+        ")->execute([':user_id' => $user_id]);
+        return; 
+    }
+
+    // 3) Gather all future days with day_score, ignoring any that are attended or impossible
+    //    We consider 'today' as the cut-off for "future".
+    //    If you want to allow marking "today" too, adjust the comparison.
+    $stmt = $pdo->prepare("
+        SELECT daily_record_id, record_date, day_score
+        FROM daily_records
+        WHERE user_id = :user_id
+          AND record_date >= CURDATE()
+          AND record_date <= '2025-12-31'
+          AND gym_attended = 0
+          AND impossible_day = 0
+          AND day_score > 0
+        ORDER BY day_score DESC
+    ");
+    $stmt->execute([':user_id' => $user_id]);
+    $potential_days = $stmt->fetchAll();
+
+    // 4) Mark the top N as recommended_day=1, the rest 0
+    //    1) zero out recommended for all future days
+    $pdo->prepare("
+        UPDATE daily_records
+        SET recommended_day = 0
+        WHERE user_id = :user_id
+          AND record_date >= CURDATE()
+          AND record_date <= '2025-12-31'
+    ")->execute([':user_id' => $user_id]);
+
+    // 2) pick the top N from the sorted list
+    $count = 0;
+    foreach ($potential_days as $day) {
+        if ($count < $remaining_needed) {
+            $upd_stmt = $pdo->prepare("
+                UPDATE daily_records
+                SET recommended_day = 1
+                WHERE daily_record_id = :id
+            ");
+            $upd_stmt->execute([':id' => $day['daily_record_id']]);
+            $count++;
+        } else {
+            break;
+        }
+    }
+}
+
+
+/**
  * Fetch all daily_records for a given user & year, 
  * ensuring each day has a record (if you use ensure_year_records()).
  * Return an array keyed by 'YYYY-MM-DD'.
