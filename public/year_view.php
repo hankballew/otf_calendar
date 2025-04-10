@@ -9,6 +9,9 @@ require_once __DIR__ . '/../includes/functions.php';
 // 1) Get the user_id from session
 $user_id = $_SESSION['user_id'];
 
+// 1) Compute or refresh future day scores
+compute_day_scores_for_future($user_id, $year, $user_settings);
+
 // 2) Before we fetch year data, update recommended days
 //    This ensures the "gold" recommendations are up to date each time the page loads.
 update_recommended_days($user_id, 120);
