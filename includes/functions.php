@@ -6,6 +6,55 @@
 
 
 /**
+ * Get the number of consecutive days (streak) the user attended 
+ * before a given record_date (not counting that day itself).
+ *
+ * Example: if user attended on 2025-04-08 and 2025-04-09, 
+ * and we're looking at 2025-04-10, the streak is 2.
+ */
+function get_consecutive_streak($user_id, $record_date) {
+    $pdo = get_db_connection();
+
+    // Start from the day before $record_date
+    // We'll move backwards day by day until we find a day not attended or no record
+    $current_date = new DateTime($record_date);
+    $current_date->modify('-1 day'); // the day before
+
+    $streak = 0;
+
+    while (true) {
+        $date_str = $current_date->format('Y-m-d');
+
+        // Check if there's a record of gym_attended = 1 for this date
+        $stmt = $pdo->prepare("
+            SELECT gym_attended
+            FROM daily_records
+            WHERE user_id = :user_id
+              AND record_date = :record_date
+            LIMIT 1
+        ");
+        $stmt->execute([
+            ':user_id' => $user_id,
+            ':record_date' => $date_str
+        ]);
+
+        $row = $stmt->fetch();
+
+        if (!$row || $row['gym_attended'] == 0) {
+            // No record found, or user did not attend => streak ends
+            break;
+        }
+
+        // If attended, increment streak and move another day back
+        $streak++;
+        $current_date->modify('-1 day');
+    }
+
+    return $streak;
+}
+
+
+/**
  * Ensure a row exists for every date of the specified year for this user.
  * If a row already exists for that date, do nothing; otherwise insert a new record with defaults.
  */
