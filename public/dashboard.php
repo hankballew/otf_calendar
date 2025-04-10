@@ -28,6 +28,20 @@ $stmt = $pdo->prepare("
 $stmt->execute(['uid' => $user_id]);
 $records = $stmt->fetchAll();
 
+
+$user_id = $_SESSION['user_id'];
+$start_date = new DateTime();
+$end_date = (new DateTime())->modify('+30 days');
+
+$current = $start_date;
+while ($current <= $end_date) {
+    $date_str = $current->format('Y-m-d');
+    $score = calculate_day_score($user_id, $date_str, $user_settings);
+    // You might store it or just display it
+    $current->modify('+1 day');
+}
+
+
 ?>
 <!DOCTYPE html>
 <html>
