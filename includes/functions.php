@@ -122,32 +122,102 @@ function get_db_connection() {
     return $pdo;
 }
 
+<?php
+// includes/functions.php
+
 /**
- * Example function for day score calculation (very simplified)
- * In real usage, you'd incorporate your multipliers from user_settings, etc.
+ * Calculate the day score, factoring in consecutive-day recovery penalties.
+ * 
+ * $user_settings might contain day-of-week multipliers, z-score factors, etc.
  */
-function calculate_day_score($day_of_week, $previous_day_attended, $readiness_z, $urgency_multiplier, $school_day, $user_settings) {
-    $day_mult = 1.0; 
-    switch ($day_of_week) {
-        case 'Monday': $day_mult = $user_settings['day_of_week_monday']; break;
-        case 'Tuesday': $day_mult = $user_settings['day_of_week_tuesday']; break;
-        case 'Wednesday': $day_mult = $user_settings['day_of_week_wednesday']; break;
-        // ... etc.
+function calculate_day_score($user_id, $record_date, $user_settings) {
+    // 1) Figure out the day_of_week multiplier
+    $day_name = date('l', strtotime($record_date)); // e.g. "Monday"
+    $key_for_day = 'day_of_week_' . strtolower($day_name);
+    $day_of_week_mult = $user_settings[$key_for_day] ?? 1.0;
+
+    // 2) Get readiness z-score factor
+    //    Typically you'd fetch readiness_zscore from daily_records 
+    //    or recalc on the fly. For brevity, let's just do a quick query:
+    $pdo = get_db_connection();
+    $stmt = $pdo->prepare("
+        SELECT readiness_score, readiness_zscore, gym_attended, impossible_day, is_school_day
+        FROM daily_records
+        WHERE user_id = :user_id
+          AND record_date = :record_date
+        LIMIT 1
+    ");
+    $stmt->execute([
+        ':user_id' => $user_id,
+        ':record_date' => $record_date
+    ]);
+    $rec = $stmt->fetch();
+
+    if (!$rec) {
+        // If no record for this day, assume default or 0
+        return 0.0;
     }
 
-    // Recovery penalty: if previous day was a gym day
-    $recovery_mult = $previous_day_attended ? $user_settings['recovery_penalty_first_day'] : 1.0;
+    // If it's impossible day, score is 0
+    if ($rec['impossible_day']) {
+        return 0.0;
+    }
 
-    // Z-score multiplier
-    // e.g., 1 + (zscore * factor)
-    $zscore_mult = 1.0 + ($readiness_z * $user_settings['zscore_multiplier_factor']);
+    // z-score multiplier
+    $zscore = isset($rec['readiness_zscore']) ? (float)$rec['readiness_zscore'] : 0.0;
+    $zscore_factor = isset($user_settings['zscore_multiplier_factor']) 
+        ? (float)$user_settings['zscore_multiplier_factor'] : 0.2;
+    $zscore_mult = 1.0 + ($zscore * $zscore_factor);
+    if ($zscore_mult < 0) {
+        $zscore_mult = 0; // clamp at zero to avoid negative
+    }
 
-    // School day multiplier
-    $school_mult = $school_day ? $user_settings['school_day_multiplier'] : 1.0;
+    // 3) Urgency multiplier (behind / ahead schedule)
+    //    For simplicity, let's assume behind => 1.2, on track => 1.0, etc.
+    $urgency_mult = 1.0; // you'd query how many sessions done vs left
 
-    // Combine
-    $day_score = $day_mult * $recovery_mult * $zscore_mult * $urgency_multiplier * $school_mult;
+    // 4) School day multiplier
+    $school_day_mult = 1.0;
+    if ($rec['is_school_day'] && isset($user_settings['school_day_multiplier'])) {
+        $school_day_mult = (float)$user_settings['school_day_multiplier'];
+    }
 
-    // Clamp at 0 if negative
-    return max(0, $day_score);
+    // 5) Consecutive-day recovery penalty
+    //    Let's see how many days in a row were attended before 'record_date'
+    $streak = get_consecutive_streak($user_id, $record_date);
+
+    $recovery_mult = 1.0; // default if no consecutive day
+    if ($streak === 1) {
+        $recovery_mult = (float)($user_settings['recovery_penalty_first_day'] ?? 0.4);
+    } elseif ($streak === 2) {
+        $recovery_mult = (float)($user_settings['recovery_penalty_second_day'] ?? 0.3);
+    } elseif ($streak >= 3) {
+        // you can define a third-day penalty or a formula
+        $recovery_mult = (float)($user_settings['recovery_penalty_third_day'] ?? 0.2);
+    }
+
+    // 6) Combine
+    $day_score = $day_of_week_mult 
+               * $zscore_mult 
+               * $urgency_mult 
+               * $school_day_mult 
+               * $recovery_mult;
+
+    // clamp to zero if negative
+    $day_score = max(0, $day_score);
+
+    // Optionally update daily_records.day_score if you want to store it
+    $upd = $pdo->prepare("
+        UPDATE daily_records
+        SET day_score = :score
+        WHERE user_id = :user_id
+          AND record_date = :record_date
+    ");
+    $upd->execute([
+        ':score' => $day_score,
+        ':user_id' => $user_id,
+        ':record_date' => $record_date
+    ]);
+
+    return $day_score;
 }
