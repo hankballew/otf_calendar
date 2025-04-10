@@ -4,6 +4,58 @@
  * Utility & helper functions for the OTF Calendar site.
  */
 
+
+/**
+ * Ensure a row exists for every date of the specified year for this user.
+ * If a row already exists for that date, do nothing; otherwise insert a new record with defaults.
+ */
+function ensure_year_records($user_id, $year) {
+    $pdo = get_db_connection();
+
+    // Check if user already has records for this year
+    $stmt = $pdo->prepare("SELECT COUNT(*) AS cnt FROM daily_records 
+                           WHERE user_id = :uid 
+                             AND YEAR(record_date) = :year");
+    $stmt->execute([':uid' => $user_id, ':year' => $year]);
+    $row = $stmt->fetch();
+
+    // If we already have records for that year, do nothing 
+    // (or you could do partial checks if you want to fill only missing days)
+    if ($row && $row['cnt'] > 0) {
+        return;
+    }
+
+    // Build a date range from Jan 1 to Dec 31 of that year
+    $start_date = new DateTime("$year-01-01");
+    $end_date   = new DateTime("$year-12-31");
+
+    // We'll do a single prepared statement in a loop.
+    // The ON DUPLICATE KEY ensures we don't duplicate if record_date already exists.
+    // But since we just checked count=0, probably not needed. It's still good for safety.
+    $insert_sql = "
+        INSERT INTO daily_records (user_id, record_date, readiness_score, gym_attended, impossible_day, is_school_day)
+        VALUES (:user_id, :record_date, NULL, 0, 0, 0)
+        ON DUPLICATE KEY UPDATE
+            updated_at = NOW()
+    ";
+    $insert_stmt = $pdo->prepare($insert_sql);
+
+    // Iterate over each day
+    $current = $start_date;
+    while ($current <= $end_date) {
+        $record_date_str = $current->format('Y-m-d');
+
+        $insert_stmt->execute([
+            ':user_id' => $user_id,
+            ':record_date' => $record_date_str
+        ]);
+
+        // Move to next day
+        $current->modify('+1 day');
+    }
+}
+
+
 // Example: Connect to DB using PDO
 function get_db_connection() {
     require_once __DIR__ . '/../config/config.php';
