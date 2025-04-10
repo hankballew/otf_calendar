@@ -4,6 +4,36 @@
  * Utility & helper functions for the OTF Calendar site.
  */
 
+function get_average_readiness_by_day_of_week($user_id) {
+    $pdo = get_db_connection();
+    
+    // We'll look at all historical data, or you could limit to the last year, etc.
+    // Using DAYNAME() might vary by locale/timezone, 
+    // but typically returns "Monday", "Tuesday", etc.
+    $sql = "
+        SELECT DAYNAME(record_date) AS dow, 
+               AVG(readiness_score) AS avg_readiness
+        FROM daily_records
+        WHERE user_id = :uid
+          AND readiness_score IS NOT NULL
+          AND readiness_score > 0
+        GROUP BY DAYNAME(record_date)
+    ";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([':uid' => $user_id]);
+
+    $rows = $stmt->fetchAll();
+    // Put them in an associative array, e.g. [ 'Monday' => 74.2, 'Tuesday' => 71.9, ... ]
+    $averages = [];
+    foreach ($rows as $r) {
+        $dow = $r['dow'];  // e.g. "Monday"
+        $avg = (float) $r['avg_readiness'];
+        $averages[$dow] = $avg;
+    }
+
+    return $averages;
+}
+
 /**
  * If there's no actual readiness or attendance data for a future day, 
  * we'll assign a simple "day_of_week * school_day" based score 
