@@ -4,6 +4,59 @@
  * Utility & helper functions for the OTF Calendar site.
  */
 
+function calculate_future_day_score($user_id, $date_str, $user_settings) {
+    // 1) If we have a readiness_score, great—use it. Otherwise, use a default (e.g. 75)
+    $rec = get_daily_record($user_id, $date_str);
+    $readiness = $rec['readiness_score'];
+    if ($readiness === null) {
+        $readiness = 75; // your chosen default
+    }
+
+    // 2) Convert that to a z-score if you want
+    $zscore = ($readiness - 75) / 10; // if your average is 75 and std dev is 10
+    // or store the real mean/std in user_settings
+
+    // 3) Build a partial day_score ignoring consecutive day logic 
+    //    because we can't know future attendance yet.
+    $day_of_week_mult = get_day_of_week_multiplier($date_str, $user_settings);
+    $school_mult = $rec['is_school_day'] ? $user_settings['school_day_multiplier'] : 1.0;
+    $zscore_mult = 1.0 + ($zscore * ($user_settings['zscore_multiplier_factor'] ?? 0.2));
+
+    // day_score = day_of_week_mult * school_mult * zscore_mult
+    // no consecutive penalty for future
+    $score = $day_of_week_mult * $school_mult * max($zscore_mult, 0.0);
+    return $score;
+}
+
+function compute_day_scores_for_future($user_id, $year, $user_settings) {
+    $pdo = get_db_connection();
+    // Suppose you do year-based. Or do from today to Dec 31
+    $start = new DateTime(date('Y-m-d')); 
+    $end   = new DateTime("$year-12-31"); 
+
+    $stmt_upd = $pdo->prepare("
+        UPDATE daily_records
+        SET day_score = :score
+        WHERE user_id = :uid 
+          AND record_date = :date
+    ");
+
+    $current = $start;
+    while ($current <= $end) {
+        $date_str = $current->format('Y-m-d');
+        // skip if impossible_day=1 or gym_attended=1 if you prefer
+        // else compute a future score
+        $score = calculate_future_day_score($user_id, $date_str, $user_settings);
+        // store in DB
+        $stmt_upd->execute([
+            ':score' => $score,
+            ':uid'   => $user_id,
+            ':date'  => $date_str,
+        ]);
+        $current->modify('+1 day');
+    }
+}
+
 
 /**
  * Updates the recommended_day column for the user so that 
