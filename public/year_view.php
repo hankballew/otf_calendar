@@ -4,6 +4,8 @@ require_once __DIR__ . '/../includes/auth.php';
 require_login();
 require_once __DIR__ . '/../includes/functions.php';
 
+update_recommended_days($user_id, 120);
+
 // 1) Determine which year to display
 $year = isset($_GET['year']) ? (int)$_GET['year'] : date('Y');
 
