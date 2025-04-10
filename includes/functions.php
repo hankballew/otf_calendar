@@ -4,55 +4,111 @@
  * Utility & helper functions for the OTF Calendar site.
  */
 
+/**
+ * If there's no actual readiness or attendance data for a future day, 
+ * we'll assign a simple "day_of_week * school_day" based score 
+ * (so it won't stay zero).
+ */
 function calculate_future_day_score($user_id, $date_str, $user_settings) {
-    // 1) If we have a readiness_score, great—use it. Otherwise, use a default (e.g. 75)
-    $rec = get_daily_record($user_id, $date_str);
-    $readiness = $rec['readiness_score'];
-    if ($readiness === null) {
-        $readiness = 75; // your chosen default
+    $pdo = get_db_connection();
+
+    // Get the existing record
+    $stmt = $pdo->prepare("SELECT * FROM daily_records 
+                           WHERE user_id = :uid AND record_date = :date_str");
+    $stmt->execute([':uid' => $user_id, ':date_str' => $date_str]);
+    $rec = $stmt->fetch();
+
+    // If there's no record or it's impossible/attended, 
+    // we keep day_score = 0
+    if (!$rec || $rec['impossible_day'] == 1 || $rec['gym_attended'] == 1) {
+        return 0.0;
     }
 
-    // 2) Convert that to a z-score if you want
-    $zscore = ($readiness - 75) / 10; // if your average is 75 and std dev is 10
-    // or store the real mean/std in user_settings
+    // day_of_week multiplier from user_settings or some simple defaults
+    $dow = date('l', strtotime($date_str)); // "Monday", "Tuesday", etc.
+    // We'll do an example fallback if user_settings doesn’t exist
+    $day_of_week_mult = 1.0;
+    if (!empty($user_settings)) {
+        switch ($dow) {
+            case 'Monday':
+            case 'Wednesday':
+            case 'Friday':
+                $day_of_week_mult = $user_settings['day_of_week_monday'] ?? 1.0;
+                break;
+            case 'Tuesday':
+            case 'Thursday':
+                $day_of_week_mult = $user_settings['day_of_week_tuesday'] ?? 0.6;
+                break;
+            default:
+                // Weekend
+                $day_of_week_mult = $user_settings['day_of_week_saturday'] ?? 0.5;
+        }
+    } else {
+        // Hard-coded fallback
+        if (in_array($dow, ['Monday','Wednesday','Friday'])) {
+            $day_of_week_mult = 1.0;
+        } elseif (in_array($dow, ['Tuesday','Thursday'])) {
+            $day_of_week_mult = 0.6;
+        } else {
+            $day_of_week_mult = 0.5;
+        }
+    }
 
-    // 3) Build a partial day_score ignoring consecutive day logic 
-    //    because we can't know future attendance yet.
-    $day_of_week_mult = get_day_of_week_multiplier($date_str, $user_settings);
-    $school_mult = $rec['is_school_day'] ? $user_settings['school_day_multiplier'] : 1.0;
-    $zscore_mult = 1.0 + ($zscore * ($user_settings['zscore_multiplier_factor'] ?? 0.2));
+    // School day multiplier
+    $school_mult = 1.0;
+    if ($rec['is_school_day'] == 1) {
+        $school_mult = $user_settings['school_day_multiplier'] ?? 1.2;
+    }
 
-    // day_score = day_of_week_mult * school_mult * zscore_mult
-    // no consecutive penalty for future
-    $score = $day_of_week_mult * $school_mult * max($zscore_mult, 0.0);
+    // Combine
+    $score = $day_of_week_mult * $school_mult;
+    // If you want to factor in readiness if it exists, 
+    // you can do it, or leave it alone for "future" logic
+
     return $score;
 }
 
+/**
+ * For each future day from "today" to Dec 31 of the target year:
+ *   - If day_score is zero or null, recalc it using calculate_future_day_score().
+ *   - Then store the result in daily_records.
+ */
 function compute_day_scores_for_future($user_id, $year, $user_settings) {
     $pdo = get_db_connection();
-    // Suppose you do year-based. Or do from today to Dec 31
-    $start = new DateTime(date('Y-m-d')); 
-    $end   = new DateTime("$year-12-31"); 
 
-    $stmt_upd = $pdo->prepare("
+    // We'll do from "today" to "$year-12-31". 
+    // Adapt as needed if you want the entire year always.
+    $start_date = new DateTime();
+    // If the user is viewing a different year in year_view, 
+    // you might do max(today, 1-Jan-of-year).
+    $year_start = new DateTime("$year-01-01");
+    if ($start_date < $year_start) {
+        $start_date = $year_start;
+    }
+    $end_date = new DateTime("$year-12-31");
+
+    // Prepare update statement once
+    $upd_stmt = $pdo->prepare("
         UPDATE daily_records
         SET day_score = :score
         WHERE user_id = :uid 
-          AND record_date = :date
+          AND record_date = :date_str
     ");
 
-    $current = $start;
-    while ($current <= $end) {
+    $current = clone $start_date;
+    while ($current <= $end_date) {
         $date_str = $current->format('Y-m-d');
-        // skip if impossible_day=1 or gym_attended=1 if you prefer
-        // else compute a future score
+        // Calculate a minimal future day score
         $score = calculate_future_day_score($user_id, $date_str, $user_settings);
-        // store in DB
-        $stmt_upd->execute([
-            ':score' => $score,
-            ':uid'   => $user_id,
-            ':date'  => $date_str,
-        ]);
+        // Write it to the DB, only if it's > 0 or if day_score is currently zero
+        // (You can always override it.)
+        if ($score > 0) {
+            $upd_stmt->execute([
+                ':score'    => $score,
+                ':uid'      => $user_id,
+                ':date_str' => $date_str,
+            ]);
+        }
         $current->modify('+1 day');
     }
 }
