@@ -1,21 +1,24 @@
 <?php
 // public/year_view.php
+
 require_once __DIR__ . '/../includes/auth.php';
 require_login();
+
 require_once __DIR__ . '/../includes/functions.php';
 
-update_recommended_days($user_id, 120);
-
-// 1) Determine which year to display
-$year = isset($_GET['year']) ? (int)$_GET['year'] : date('Y');
-
-// 2) Fetch the user_id
+// 1) Get the user_id from session
 $user_id = $_SESSION['user_id'];
 
-// 3) Get data for the year
-$year_data = get_year_data($user_id, $year);
+// 2) Before we fetch year data, update recommended days
+//    This ensures the "gold" recommendations are up to date each time the page loads.
+update_recommended_days($user_id, 120);
+
+// 3) Determine which year to display
+$year = isset($_GET['year']) ? (int)$_GET['year'] : date('Y');
 
 // 4) If there's a POST update from an inline form, handle it
+//    (We do this before fetching the data so that after reloading, 
+//     the new data is reflected.)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_date'])) {
     $pdo = get_db_connection();
 
@@ -25,6 +28,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_date'])) {
     $impossible_day = isset($_POST['impossible_day']) ? 1 : 0;
     $is_school_day = isset($_POST['is_school_day']) ? 1 : 0;
 
+    // Update the daily record
     $stmt = $pdo->prepare("
         UPDATE daily_records
         SET readiness_score = :readiness_score,
@@ -35,7 +39,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_date'])) {
         WHERE user_id = :user_id
           AND record_date = :record_date
     ");
-
     $stmt->execute([
         ':readiness_score' => $readiness_score,
         ':gym_attended' => $gym_attended,
@@ -45,17 +48,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_date'])) {
         ':record_date' => $record_date
     ]);
 
-    // Optionally recalc day_score, or do it in a cron job. For now let's do it inline:
-    // (Assuming you have user_settings loaded somewhere, or we re-fetch them)
-    // ...
+    // Optionally recalc the day_score for this record_date 
+    // (assuming you have user_settings, consecutive-day logic, etc.)
     // e.g. calculate_day_score($user_id, $record_date, $user_settings);
 
-    // Refresh the page so the updated data is displayed
+    // Re-run recommendations so the gold days update immediately
+    update_recommended_days($user_id, 120);
+
+    // Refresh the page so the updated data & recommended days are displayed
     header("Location: year_view.php?year=$year");
     exit;
 }
 
-// 5) Now build the UI
+// 5) Finally, fetch all daily records for this year
+$year_data = get_year_data($user_id, $year);
+
 ?>
 <!DOCTYPE html>
 <html>
@@ -91,6 +98,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_date'])) {
         .score-high   { background-color: #ffcc99; }    /* light orange */
         .attended     { background-color: #ff6600 !important; color: #fff; }
         .impossible   { background-color: #999999 !important; color: #fff; }
+        .recommended  { background-color: gold !important; color: #000; }
+
         /* Inline edit form styling */
         .edit-form {
             background: #fff;
@@ -141,9 +150,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_date'])) {
 
             // Build an array of weeks -> days
             // We'll do a simple approach: each row is a week, columns: Sun..Sat
-            // (If you want Monday as first day, adjust accordingly)
             $first_day_w = (int)$month_start->format('w'); // 0=Sunday, 6=Saturday
-            // We may need some blank cells before day 1
         ?>
         <table class="month-table">
             <tr><th colspan="7"><?php echo $month_name; ?></th></tr>
@@ -152,25 +159,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_date'])) {
                 <th>Thu</th><th>Fri</th><th>Sat</th>
             </tr>
             <?php
-            // Start printing rows
             $day_counter = 1;
-            $current_week_day = 0; // Sunday
-            
             while ($day_counter <= $days_in_month) {
                 echo "<tr>";
-                // For each of 7 days in the row:
                 for ($col = 0; $col < 7; $col++) {
-                    // If we haven't reached the first day of the month yet (based on w)
-                    // or if we've passed the last day
-                    if ( ($day_counter == 1 && $col < $first_day_w) 
-                         || $day_counter > $days_in_month ) {
-                        // Print empty cell
+                    // If we haven't reached the first day of the month yet
+                    // or if we've passed the last day, print blank.
+                    if (($day_counter == 1 && $col < $first_day_w) 
+                        || $day_counter > $days_in_month ) {
                         echo "<td></td>";
                     } else {
-                        // This is a valid day in the month
                         $date_str = sprintf('%04d-%02d-%02d', $year, $month, $day_counter);
-
-                        // Let's fetch the record from $year_data
                         $rec = $year_data[$date_str] ?? null;
 
                         // Determine cell color / class
@@ -178,13 +177,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_date'])) {
                         $score_display = '';
 
                         if ($rec) {
-                            // If gym_attended => override color to attended
                             if ($rec['gym_attended'] == 1) {
+                                // If you attended, override everything with "attended"
                                 $cell_class = 'attended';
                             } elseif ($rec['impossible_day'] == 1) {
+                                // If it's impossible, override with "impossible"
                                 $cell_class = 'impossible';
+                            } elseif ($rec['recommended_day'] == 1) {
+                                // If it's recommended, highlight gold
+                                $cell_class = 'recommended';
                             } else {
-                                // Then color by day_score
+                                // Otherwise color by day_score
                                 $score = (float)($rec['day_score'] ?? 0);
                                 if ($score < 0.5) {
                                     $cell_class = 'score-low';
@@ -199,31 +202,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_date'])) {
 
                         echo "<td class=\"{$cell_class}\">";
                         echo "<div>{$day_counter}</div>";
-                        // Optionally show the day_score
+                        // Show the day_score if we have one
                         if ($score_display !== '') {
                             echo "<div style='font-size:0.8em;'>Score: $score_display</div>";
                         }
 
-                        // Add a small link to edit
+                        // Edit link to toggle inline form
                         echo "<div class='edit-link' onclick=\"toggleEditForm('$date_str')\">Edit</div>";
 
                         // Inline edit form (hidden by default)
                         echo "<div id='edit-form-$date_str' class='edit-form'>";
                         echo "<form method='post'>";
                         echo "<input type='hidden' name='record_date' value='{$date_str}'>";
-                        // readiness
-                        $readiness_val = $rec ? $rec['readiness_score'] : '';
+
+                        // Readiness
+                        $readiness_val = $rec ? ($rec['readiness_score'] ?? '') : '';
                         echo "Rdy: <input type='text' name='readiness_score' value='{$readiness_val}' size='2'><br>";
-                        // attended
+
+                        // Attended
                         $checked_attended = ($rec && $rec['gym_attended']) ? "checked" : "";
                         echo "<label><input type='checkbox' name='gym_attended' $checked_attended> Attended</label><br>";
-                        // impossible
+
+                        // Impossible
                         $checked_impossible = ($rec && $rec['impossible_day']) ? "checked" : "";
                         echo "<label><input type='checkbox' name='impossible_day' $checked_impossible> Impossible</label><br>";
-                        // school
+
+                        // School
                         $checked_school = ($rec && $rec['is_school_day']) ? "checked" : "";
                         echo "<label><input type='checkbox' name='is_school_day' $checked_school> School?</label><br>";
-                        // submit
+
+                        // Submit
                         echo "<button type='submit'>Save</button>";
                         echo "</form>";
                         echo "</div>";
@@ -231,7 +239,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['record_date'])) {
                         echo "</td>";
                         $day_counter++;
                     }
-                    $current_week_day++;
                 }
                 echo "</tr>";
             }
