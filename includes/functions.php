@@ -4,6 +4,128 @@
  * Utility & helper functions for the OTF Calendar site.
  */
 
+/**
+ * compute_day_scores_for_future()
+ *
+ * Loops from "today" to "year-12-31" for the specified user,
+ * assigning a day_score to each future day if it isn't impossible or attended.
+ * 
+ * The score is based on:
+ *   - Day-of-week multiplier (M/W/F vs. T/Th vs. weekend).
+ *   - School-day multiplier.
+ *   - Predicted readiness from day-of-week historical average.
+ *   - An optional z-score approach using global mean/std dev (if in user_settings).
+ */
+function compute_day_scores_for_future($user_id, $year, $user_settings) {
+    // 1) Get a DB connection
+    $pdo = get_db_connection();
+
+    // 2) Fetch day-of-week readiness averages, e.g. ["Monday" => 74.2, "Tuesday" => 71.9, ...]
+    $dow_averages = get_average_readiness_by_day_of_week($user_id);
+
+    // 3) Determine the date range: from 'today' up to 'year-12-31'.
+    //    If "today" is beyond 'year-12-31', the loop won't run.
+    $start_date = new DateTime();
+    $year_start = new DateTime("$year-01-01");
+    if ($start_date < $year_start) {
+        // If it's earlier in the calendar than "year-01-01", start from year-01-01
+        $start_date = $year_start;
+    }
+    $end_date = new DateTime("$year-12-31");
+
+    // 4) We'll need a prepared statement to update daily_records.day_score
+    $upd_stmt = $pdo->prepare("
+        UPDATE daily_records
+        SET day_score = :score
+        WHERE user_id = :uid 
+          AND record_date = :date_str
+    ");
+
+    // 5) Some optional global readiness stats (mean/std) from user_settings, or fallback
+    $global_mean = $user_settings['global_readiness_mean'] ?? 75;
+    $global_std  = $user_settings['global_readiness_std']  ?? 10;
+    $z_factor    = $user_settings['zscore_multiplier_factor'] ?? 0.2;
+
+    // 6) Now iterate day-by-day
+    $current = clone $start_date;
+    while ($current <= $end_date) {
+        $date_str = $current->format('Y-m-d');
+
+        // Fetch the row from daily_records
+        $stmt = $pdo->prepare("
+            SELECT daily_record_id, gym_attended, impossible_day, is_school_day, readiness_score
+            FROM daily_records
+            WHERE user_id = :uid 
+              AND record_date = :date_str
+            LIMIT 1
+        ");
+        $stmt->execute([':uid' => $user_id, ':date_str' => $date_str]);
+        $rec = $stmt->fetch();
+
+        // If there's no row at all, or it's flagged impossible or already attended, skip
+        // (score remains 0 or NULL)
+        if (!$rec || $rec['impossible_day'] == 1 || $rec['gym_attended'] == 1) {
+            $current->modify('+1 day');
+            continue;
+        }
+
+        // 6a) Day-of-week multiplier
+        $dow_name = $current->format('l'); // "Monday", "Tuesday", etc.
+        $day_of_week_mult = 1.0; // fallback
+
+        // If your user_settings contain day_of_week_xxx, you can do:
+        // $key = 'day_of_week_' . strtolower($dow_name); 
+        // $day_of_week_mult = $user_settings[$key] ?? 1.0;
+
+        // Or do a simple hard-coded approach:
+        if (in_array($dow_name, ['Monday','Wednesday','Friday'])) {
+            $day_of_week_mult = 1.0;
+        } elseif (in_array($dow_name, ['Tuesday','Thursday'])) {
+            $day_of_week_mult = 0.6;
+        } else {
+            // weekend
+            $day_of_week_mult = 0.5;
+        }
+
+        // 6b) School day multiplier
+        $school_mult = ($rec['is_school_day'] == 1)
+            ? ($user_settings['school_day_multiplier'] ?? 1.2)
+            : 1.0;
+
+        // 6c) Predicted readiness for this day-of-week
+        // If readiness_score is provided for this day (somehow you put it in?), use it
+        $predicted_readiness = $rec['readiness_score'];
+        if (empty($predicted_readiness)) {
+            // Look up the average for that day-of-week
+            $dow_avg = $dow_averages[$dow_name] ?? 75; // fallback if no data
+            $predicted_readiness = $dow_avg;
+        }
+
+        // 6d) Convert predicted readiness into a z-score factor, if desired
+        // e.g. z = (readiness - mean) / std
+        $z = ($predicted_readiness - $global_mean) / $global_std;
+        $z_mult = 1.0 + ($z * $z_factor);
+        if ($z_mult < 0) {
+            $z_mult = 0; 
+        }
+
+        // 6e) Final day_score
+        // You can refine this however you want
+        $score = $day_of_week_mult * $school_mult * $z_mult;
+
+        // 6f) Store day_score in the DB
+        $upd_stmt->execute([
+            ':score'    => $score,
+            ':uid'      => $user_id,
+            ':date_str' => $date_str,
+        ]);
+
+        // Move to the next day
+        $current->modify('+1 day');
+    }
+}
+
+
 function get_average_readiness_by_day_of_week($user_id) {
     $pdo = get_db_connection();
     
@@ -100,38 +222,6 @@ function calculate_future_day_score($user_id, $date_str, $user_settings, $dow_av
  *   - If day_score is zero or null, recalc it using calculate_future_day_score().
  *   - Then store the result in daily_records.
  */
-function compute_day_scores_for_future($user_id, $year, $user_settings) {
-    $pdo = get_db_connection();
-    
-    // Get the day-of-week averages
-    $dow_averages = get_average_readiness_by_day_of_week($user_id);
-
-    // (Same date range logic as before)
-    $start_date = new DateTime();
-    ...
-    $upd_stmt = $pdo->prepare("
-        UPDATE daily_records
-        SET day_score = :score
-        WHERE user_id = :uid 
-          AND record_date = :date_str
-    ");
-
-    $current = clone $start_date;
-    while ($current <= $end_date) {
-        $date_str = $current->format('Y-m-d');
-        // Now call your new function with the day-of-week readiness approach
-        $score = calculate_future_day_score($user_id, $date_str, $user_settings, $dow_averages);
-
-        if ($score > 0) {
-            $upd_stmt->execute([
-                ':score'    => $score,
-                ':uid'      => $user_id,
-                ':date_str' => $date_str,
-            ]);
-        }
-        $current->modify('+1 day');
-    }
-}
 
 
 
