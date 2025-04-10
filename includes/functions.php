@@ -122,8 +122,6 @@ function get_db_connection() {
     return $pdo;
 }
 
-<?php
-// includes/functions.php
 
 /**
  * Calculate the day score, factoring in consecutive-day recovery penalties.
