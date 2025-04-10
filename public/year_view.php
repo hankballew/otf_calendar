@@ -24,6 +24,65 @@ compute_day_scores_for_future($user_id, $year, $user_settings);
 // 4) Update recommended days
 update_recommended_days($user_id, 120);
 
+<?php
+// year_view.php (only showing the snippet where we display the summary)
+
+// 1) Define your goal
+$goal = 120;
+
+// 2) Count how many sessions completed so far (by user_id). 
+//    This snippet assumes your cutoff is December 31, 2025.
+//    Adjust if needed to match your real logic.
+$stmt = $pdo->prepare("
+    SELECT COUNT(*) AS completed_count 
+    FROM daily_records
+    WHERE user_id = :user_id
+      AND record_date <= '2025-12-31'
+      AND gym_attended = 1
+");
+$stmt->execute([':user_id' => $user_id]);
+$row = $stmt->fetch();
+$completed = $row ? (int)$row['completed_count'] : 0;
+
+// 3) Count how many recommended days are currently in the future 
+//    (and not attended/impossible). 
+//    If you only want recommended days up to 12/31/2025, filter that as well.
+$stmt = $pdo->prepare("
+    SELECT COUNT(*) AS recommended_count
+    FROM daily_records
+    WHERE user_id = :user_id
+      AND recommended_day = 1
+      AND record_date >= CURDATE()
+      AND record_date <= '2025-12-31'
+");
+$stmt->execute([':user_id' => $user_id]);
+$row = $stmt->fetch();
+$recommended = $row ? (int)$row['recommended_count'] : 0;
+
+// 4) Determine if you’re “on track” 
+//    One simple way is: if completed + recommended >= goal, you can still make it.
+$remaining_needed = $goal - $completed;
+$on_track_msg = '';
+if ($completed >= $goal) {
+    // Already done
+    $on_track_msg = "Congratulations! You’ve already met your $goal-day goal!";
+} else {
+    // We still need to see if recommended covers the gap
+    if ($recommended >= $remaining_needed) {
+        $on_track_msg = "You're on track to meet (or exceed) your goal!";
+    } else {
+        $on_track_msg = "You're behind schedule—consider adding more gym days!";
+    }
+}
+
+// 5) Display the summary
+echo "<p><strong>Your Goal:</strong> $goal total sessions.<br>";
+echo "So far, you've completed <strong>$completed</strong> sessions.<br>";
+echo "You have <strong>$recommended</strong> recommended days coming up.<br>";
+echo "<strong>$on_track_msg</strong></p>";
+
+
+
 // 4) If there's a POST update from an inline form, handle it
 //    (We do this before fetching the data so that after reloading, 
 //     the new data is reflected.)
