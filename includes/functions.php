@@ -39,64 +39,61 @@ function get_average_readiness_by_day_of_week($user_id) {
  * we'll assign a simple "day_of_week * school_day" based score 
  * (so it won't stay zero).
  */
-function calculate_future_day_score($user_id, $date_str, $user_settings) {
+function calculate_future_day_score($user_id, $date_str, $user_settings, $dow_averages) {
     $pdo = get_db_connection();
 
-    // Get the existing record
+    // Query the record (like before)
     $stmt = $pdo->prepare("SELECT * FROM daily_records 
                            WHERE user_id = :uid AND record_date = :date_str");
     $stmt->execute([':uid' => $user_id, ':date_str' => $date_str]);
     $rec = $stmt->fetch();
 
-    // If there's no record or it's impossible/attended, 
-    // we keep day_score = 0
+    // If no record or it's impossible/attended, return 0
     if (!$rec || $rec['impossible_day'] == 1 || $rec['gym_attended'] == 1) {
         return 0.0;
     }
 
-    // day_of_week multiplier from user_settings or some simple defaults
-    $dow = date('l', strtotime($date_str)); // "Monday", "Tuesday", etc.
-    // We'll do an example fallback if user_settings doesn’t exist
-    $day_of_week_mult = 1.0;
-    if (!empty($user_settings)) {
-        switch ($dow) {
-            case 'Monday':
-            case 'Wednesday':
-            case 'Friday':
-                $day_of_week_mult = $user_settings['day_of_week_monday'] ?? 1.0;
-                break;
-            case 'Tuesday':
-            case 'Thursday':
-                $day_of_week_mult = $user_settings['day_of_week_tuesday'] ?? 0.6;
-                break;
-            default:
-                // Weekend
-                $day_of_week_mult = $user_settings['day_of_week_saturday'] ?? 0.5;
-        }
-    } else {
-        // Hard-coded fallback
-        if (in_array($dow, ['Monday','Wednesday','Friday'])) {
-            $day_of_week_mult = 1.0;
-        } elseif (in_array($dow, ['Tuesday','Thursday'])) {
-            $day_of_week_mult = 0.6;
-        } else {
-            $day_of_week_mult = 0.5;
-        }
-    }
+    // day_of_week base multiplier 
+    // (like M/W/F = 1.0, T/Th=0.6, weekend=0.5)
+    $dow_name = date('l', strtotime($date_str)); // e.g. "Monday"
+    // fallback from user_settings or your hard-coded logic:
+    $day_of_week_mult = get_day_of_week_multiplier($dow_name, $user_settings);
 
     // School day multiplier
-    $school_mult = 1.0;
-    if ($rec['is_school_day'] == 1) {
-        $school_mult = $user_settings['school_day_multiplier'] ?? 1.2;
+    $school_mult = ($rec['is_school_day'] == 1)
+        ? ($user_settings['school_day_multiplier'] ?? 1.2)
+        : 1.0;
+
+    // *** Here is the new part: predicted readiness ***
+    // If we have a direct readiness_score for this future date (somehow), we could use it,
+    // otherwise we use the day-of-week average
+    $predicted_readiness = $rec['readiness_score'];
+    if (empty($predicted_readiness)) {
+        // see if we have a day-of-week average
+        $dow_avg = $dow_averages[$dow_name] ?? 75; // fallback if missing
+        $predicted_readiness = $dow_avg;
     }
 
-    // Combine
-    $score = $day_of_week_mult * $school_mult;
-    // If you want to factor in readiness if it exists, 
-    // you can do it, or leave it alone for "future" logic
+    // Let's say your global average readiness is 75 with stdev=10, 
+    // or you can store these in user_settings. We do a quick z-score:
+    // z = (predicted - 75) / 10
+    $global_mean = $user_settings['global_readiness_mean'] ?? 75;
+    $global_std  = $user_settings['global_readiness_std']  ?? 10;
+    $z = ($predicted_readiness - $global_mean) / $global_std;
+    // Then we do the same approach as your normal readiness factor:
+    $z_factor = $user_settings['zscore_multiplier_factor'] ?? 0.2;
+    $z_mult = 1.0 + ($z * $z_factor);
+    if ($z_mult < 0) {
+        $z_mult = 0;
+    }
 
+    // Combine them
+    // e.g. day_score = day_of_week_mult * school_mult * z_mult
+    // (No consecutive penalty for un-attended future days, or you can do more logic)
+    $score = $day_of_week_mult * $school_mult * $z_mult;
     return $score;
 }
+
 
 /**
  * For each future day from "today" to Dec 31 of the target year:
@@ -105,19 +102,13 @@ function calculate_future_day_score($user_id, $date_str, $user_settings) {
  */
 function compute_day_scores_for_future($user_id, $year, $user_settings) {
     $pdo = get_db_connection();
+    
+    // Get the day-of-week averages
+    $dow_averages = get_average_readiness_by_day_of_week($user_id);
 
-    // We'll do from "today" to "$year-12-31". 
-    // Adapt as needed if you want the entire year always.
+    // (Same date range logic as before)
     $start_date = new DateTime();
-    // If the user is viewing a different year in year_view, 
-    // you might do max(today, 1-Jan-of-year).
-    $year_start = new DateTime("$year-01-01");
-    if ($start_date < $year_start) {
-        $start_date = $year_start;
-    }
-    $end_date = new DateTime("$year-12-31");
-
-    // Prepare update statement once
+    ...
     $upd_stmt = $pdo->prepare("
         UPDATE daily_records
         SET day_score = :score
@@ -128,10 +119,9 @@ function compute_day_scores_for_future($user_id, $year, $user_settings) {
     $current = clone $start_date;
     while ($current <= $end_date) {
         $date_str = $current->format('Y-m-d');
-        // Calculate a minimal future day score
-        $score = calculate_future_day_score($user_id, $date_str, $user_settings);
-        // Write it to the DB, only if it's > 0 or if day_score is currently zero
-        // (You can always override it.)
+        // Now call your new function with the day-of-week readiness approach
+        $score = calculate_future_day_score($user_id, $date_str, $user_settings, $dow_averages);
+
         if ($score > 0) {
             $upd_stmt->execute([
                 ':score'    => $score,
@@ -142,6 +132,7 @@ function compute_day_scores_for_future($user_id, $year, $user_settings) {
         $current->modify('+1 day');
     }
 }
+
 
 
 /**
