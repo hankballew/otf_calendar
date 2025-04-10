@@ -24,7 +24,6 @@ compute_day_scores_for_future($user_id, $year, $user_settings);
 // 4) Update recommended days
 update_recommended_days($user_id, 120);
 
-<?php
 // year_view.php (only showing the snippet where we display the summary)
 
 // 1) Define your goal
