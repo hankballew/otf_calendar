@@ -6,18 +6,23 @@ require_login();
 
 require_once __DIR__ . '/../includes/functions.php';
 
-// 1) Get the user_id from session
+// 0) Get the user_id from session
 $user_id = $_SESSION['user_id'];
 
-// 1) Compute or refresh future day scores
+// 1) Determine which year to display
+$year = isset($_GET['year']) ? (int)$_GET['year'] : date('Y');
+
+// 2) Get user_settings from DB (if you haven’t already)
+$pdo = get_db_connection();
+$stmt = $pdo->prepare("SELECT * FROM user_settings WHERE user_id = :uid");
+$stmt->execute([':uid' => $user_id]);
+$user_settings = $stmt->fetch() ?: [];
+
+// 3) Compute or refresh future day scores
 compute_day_scores_for_future($user_id, $year, $user_settings);
 
-// 2) Before we fetch year data, update recommended days
-//    This ensures the "gold" recommendations are up to date each time the page loads.
+// 4) Update recommended days
 update_recommended_days($user_id, 120);
-
-// 3) Determine which year to display
-$year = isset($_GET['year']) ? (int)$_GET['year'] : date('Y');
 
 // 4) If there's a POST update from an inline form, handle it
 //    (We do this before fetching the data so that after reloading, 
