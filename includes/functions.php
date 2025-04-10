@@ -6,6 +6,49 @@
 
 
 /**
+ * Fetch all daily_records for a given user & year, 
+ * ensuring each day has a record (if you use ensure_year_records()).
+ * Return an array keyed by 'YYYY-MM-DD'.
+ */
+function get_year_data($user_id, $year) {
+    $pdo = get_db_connection();
+
+    // If you haven't ensured the year is populated, call ensure_year_records() here
+    // ensure_year_records($user_id, $year);
+
+    // Optionally recalc scores if needed, or just fetch whatever is stored
+    // For example, we can do a loop from Jan 1 to Dec 31 calling calculate_day_score(),
+    // or do a single SELECT if you already store them.
+
+    // Let's do a single query:
+    $sql = "
+        SELECT record_date, readiness_score, gym_attended, impossible_day, is_school_day, day_score
+        FROM daily_records
+        WHERE user_id = :user_id
+          AND YEAR(record_date) = :year
+        ORDER BY record_date
+    ";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+        ':user_id' => $user_id,
+        ':year' => $year,
+    ]);
+
+    $results = $stmt->fetchAll();
+    $data = [];
+
+    foreach ($results as $row) {
+        $key = $row['record_date'];
+        $data[$key] = $row;
+    }
+
+    return $data;
+}
+
+
+
+/**
  * Get the number of consecutive days (streak) the user attended 
  * before a given record_date (not counting that day itself).
  *
