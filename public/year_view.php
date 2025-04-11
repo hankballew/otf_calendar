@@ -25,6 +25,26 @@ update_recommended_days($user_id, 120);
 $year_data = get_year_data($user_id, $year);
 
 // (Optional) Could compute how many sessions remain to reach a yearly goal, but let's skip that for clarity
+$sessions_goal = 120;
+
+// Query how many sessions have been attended so far this year
+$stmt = $pdo->prepare("
+    SELECT COUNT(*) AS cnt
+    FROM daily_records
+    WHERE user_id = :uid
+      AND gym_attended = 1
+      AND YEAR(record_date) = :yr
+");
+$stmt->execute([
+    ':uid' => $user_id,
+    ':yr'  => $year
+]);
+$attended_this_year = (int)$stmt->fetchColumn();
+
+// Now how many are left to reach the goal?
+$sessions_left = max(0, $sessions_goal - $attended_this_year);
+
+
 ?>
 <!DOCTYPE html>
 <html>
