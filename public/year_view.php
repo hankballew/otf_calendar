@@ -19,7 +19,7 @@ $user_settings = $stmt->fetch() ?: [];
 // 2) compute day_scores for future & recommended days
 compute_day_scores_for_future($user_id, $year, $user_settings);
 // For example, pick 120 recommended days
-update_recommended_days($user_id, 120);
+update_recommended_days($user_id, 120, $year);
 
 // 3) fetch the year data (per-day records: readiness, impossible_day, recommended_day, etc.)
 $year_data = get_year_data($user_id, $year);
