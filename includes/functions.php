@@ -320,7 +320,7 @@ function get_year_data($user_id, $year) {
 
     // Let's do a single query:
     $sql = "
-        SELECT record_date, readiness_score, gym_attended, impossible_day, is_school_day, day_score
+        SELECT record_date, readiness_score, gym_attended, impossible_day, is_school_day, day_score, recommended_day
         FROM daily_records
         WHERE user_id = :user_id
           AND YEAR(record_date) = :year
