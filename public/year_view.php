@@ -179,6 +179,56 @@ $sessions_left = max(0, $sessions_goal - $attended_this_year);
                         }
                     }
 
+// Let’s define $label to hold "Att #…" or "Rec #…"
+$label = '';
+
+if ($rec) {
+    // 1) If day was attended
+    if (!empty($rec['gym_attended'])) {
+        $cell_class = 'attended';
+
+        // If we still have sessions left in the year’s goal,
+        // label this attendance and decrement once
+        if ($sessions_left > 0) {
+            $label = "Att #{$sessions_left}";
+            $sessions_left--;
+        }
+
+    // 2) If day is impossible
+    } elseif (!empty($rec['impossible_day'])) {
+        $cell_class = 'impossible';
+
+    // 3) If day is recommended
+    } elseif (!empty($rec['recommended_day'])) {
+        // Only highlight if it’s in the future (if you want that)
+        // or highlight unconditionally if you want to see it in the past, too.
+        if ($date_str >= date('Y-m-d')) {
+            $cell_class = 'recommended';
+
+            // label the recommended day if we still have sessions left to fill
+            if ($sessions_left > 0) {
+                $label = "Rec #{$sessions_left}";
+                $sessions_left--;
+            }
+        } else {
+            // It's recommended in the past, you might not label or color it
+            // or you can still do $cell_class = 'recommended' if you want
+        }
+
+    // 4) Otherwise, color by day_score
+    } else {
+        $score = (float)($rec['day_score'] ?? 0);
+        if ($score < 0.5) {
+            $cell_class = 'score-low';
+        } elseif ($score < 1.0) {
+            $cell_class = 'score-med';
+        } else {
+            $cell_class = 'score-high';
+        }
+        $score_display = round($score, 1);
+    }
+}
+
                     echo "<td class=\"{$cell_class}\">";
                     echo "<div>{$day_counter}</div>";
 
@@ -186,6 +236,11 @@ $sessions_left = max(0, $sessions_goal - $attended_this_year);
                     if ($score_display !== '') {
                         echo "<div style='font-size:0.8em;'>Score: $score_display</div>";
                     }
+
+if ($label !== '') {
+    echo "<div style='font-size:0.8em;'><strong>{$label}</strong></div>";
+}
+
 
                     // The inline edit link
                     echo "<div class='edit-link' onclick=\"toggleEditForm('$date_str')\">Edit</div>";
