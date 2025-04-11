@@ -237,11 +237,11 @@ function calculate_future_day_score($user_id, $date_str, $user_settings, $dow_av
  * @param int $user_id
  * @param int $goal  (e.g. 120 sessions/year)
  */
-function update_recommended_days($user_id, $goal)
+function update_recommended_days($user_id, $goal, $year)
 {
     // 1) How many sessions has the user already attended *this year*?
     $pdo  = get_db_connection();
-    $year = date('Y'); // or pass it in as an argument if needed
+
 
     $sql = "
         SELECT COUNT(*) AS cnt
