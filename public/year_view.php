@@ -1,4 +1,4 @@
-<?php
+\<?php
 // public/year_view.php
 
 require_once __DIR__ . '/../includes/auth.php';
@@ -6,7 +6,7 @@ require_login();
 
 require_once __DIR__ . '/../includes/functions.php';
 
-// 1) user_id, year, user_settings as usual
+// 1) user_id, year, user_settings
 $user_id = $_SESSION['user_id'];
 $year = isset($_GET['year']) ? (int)$_GET['year'] : date('Y');
 
@@ -18,30 +18,13 @@ $user_settings = $stmt->fetch() ?: [];
 
 // 2) compute day_scores for future & recommended days
 compute_day_scores_for_future($user_id, $year, $user_settings);
+// For example, pick 120 recommended days
 update_recommended_days($user_id, 120);
 
-// 3) fetch the year data
+// 3) fetch the year data (per-day records: readiness, impossible_day, recommended_day, etc.)
 $year_data = get_year_data($user_id, $year);
 
-// *** NEW: We'll keep track of how many sessions are left to reach our yearly goal
-$sessions_goal = 120;
-
-// Count how many attended so far this year
-$stmt = $pdo->prepare("
-    SELECT COUNT(*) AS cnt
-    FROM daily_records
-    WHERE user_id = :uid
-      AND YEAR(record_date) = :yr
-      AND gym_attended = 1
-");
-$stmt->execute([
-    ':uid' => $user_id,
-    ':yr'  => $year
-]);
-$attended_this_year = (int)$stmt->fetchColumn();
-
-// How many are left?
-$sessions_left = max(0, $sessions_goal - $attended_this_year);
+// (Optional) Could compute how many sessions remain to reach a yearly goal, but let's skip that for clarity
 ?>
 <!DOCTYPE html>
 <html>
@@ -91,7 +74,9 @@ $sessions_left = max(0, $sessions_goal - $attended_this_year);
             display: none;
             width: 100px;
         }
-        .show { display: block !important; }
+        .show {
+            display: block !important;
+        }
         .edit-link {
             font-size: 0.7em;
             cursor: pointer;
@@ -119,7 +104,7 @@ $sessions_left = max(0, $sessions_goal - $attended_this_year);
 
     <div class="calendar-container">
     <?php
-    // 4) We'll loop each month
+    // 4) Loop over each month
     for ($month = 1; $month <= 12; $month++) {
         $month_start = new DateTime("$year-$month-01");
         $month_name = $month_start->format('F');
@@ -148,26 +133,18 @@ $sessions_left = max(0, $sessions_goal - $attended_this_year);
 
                     $cell_class = '';
                     $score_display = '';
-                    $session_label = '';
 
                     if ($rec) {
+                        // Reorder the logic so recommended can show up unless overridden
                         if (!empty($rec['gym_attended'])) {
-                            // If attended, override everything with "attended"
+                            // Attended overrides everything
                             $cell_class = 'attended';
-                            // Use sessions_left to label "Att #"
-                            if ($sessions_left > 0) {
-                                $session_label = "Att #{$sessions_left}";
-                                $sessions_left--;
-                            }
                         } elseif (!empty($rec['impossible_day'])) {
+                            // If impossible day, override recommended
                             $cell_class = 'impossible';
-                        } elseif (!empty($rec['recommended_day']) && $date_str >= date('Y-m-d')) {
-                            // recommended day in the future
+                        } elseif (!empty($rec['recommended_day'])) {
+                            // If recommended_day=1 in DB
                             $cell_class = 'recommended';
-                            if ($sessions_left > 0) {
-                                $session_label = "Rec #{$sessions_left}";
-                                $sessions_left--;
-                            }
                         } else {
                             // Otherwise color by day_score
                             $score = (float)($rec['day_score'] ?? 0);
@@ -189,29 +166,25 @@ $sessions_left = max(0, $sessions_goal - $attended_this_year);
                     if ($score_display !== '') {
                         echo "<div style='font-size:0.8em;'>Score: $score_display</div>";
                     }
-                    // Show session label if we have it
-                    if ($session_label !== '') {
-                        echo "<div style='font-size:0.8em;'><strong>$session_label</strong></div>";
-                    }
 
                     // The inline edit link
                     echo "<div class='edit-link' onclick=\"toggleEditForm('$date_str')\">Edit</div>";
                     // Inline form
                     echo "<div id='edit-form-$date_str' class='edit-form'>";
-                    echo "<form method='post'>";
+                    echo "<form method='post' action='update_record.php'>"; 
+                    // ^^^ you'd presumably post to some "update_record.php" or back to "year_view.php" itself
                     echo "<input type='hidden' name='record_date' value='{$date_str}'>";
 
                     $readiness_val = $rec ? ($rec['readiness_score'] ?? '') : '';
                     echo "Rdy: <input type='text' name='readiness_score' value='{$readiness_val}' size='2'><br>";
 
-                    $checked_attended = ($rec && !empty($rec['gym_attended'])) ? "checked" : "";
-                    echo "<label><input type='checkbox' name='gym_attended' $checked_attended> Attended</label><br>";
+                    $checked_attended   = ($rec && !empty($rec['gym_attended']))     ? "checked" : "";
+                    $checked_impossible = ($rec && !empty($rec['impossible_day']))   ? "checked" : "";
+                    $checked_school     = ($rec && !empty($rec['is_school_day']))    ? "checked" : "";
 
-                    $checked_impossible = ($rec && !empty($rec['impossible_day'])) ? "checked" : "";
-                    echo "<label><input type='checkbox' name='impossible_day' $checked_impossible> Impossible</label><br>";
-
-                    $checked_school = ($rec && !empty($rec['is_school_day'])) ? "checked" : "";
-                    echo "<label><input type='checkbox' name='is_school_day' $checked_school> School?</label><br>";
+                    echo "<label><input type='checkbox' name='gym_attended' {$checked_attended}> Attended</label><br>";
+                    echo "<label><input type='checkbox' name='impossible_day' {$checked_impossible}> Impossible</label><br>";
+                    echo "<label><input type='checkbox' name='is_school_day' {$checked_school}> School?</label><br>";
 
                     echo "<button type='submit'>Save</button>";
                     echo "</form>";
