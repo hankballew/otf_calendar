@@ -1,4 +1,4 @@
-\<?php
+<?php
 // public/year_view.php
 
 require_once __DIR__ . '/../includes/auth.php';
@@ -207,7 +207,7 @@ if ($rec) {
 
             // label the recommended day if we still have sessions left to fill
             if ($sessions_left > 0) {
-                $label = "Rec #{$sessions_left}";
+                $label = "{$sessions_left} left";
                 $sessions_left--;
             }
         } else {
