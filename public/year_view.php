@@ -23,9 +23,25 @@ update_recommended_days($user_id, 120);
 // 3) fetch the year data
 $year_data = get_year_data($user_id, $year);
 
-// *** NEW: We'll keep a global counter for sessions across the entire year
-$days_sequence_counter = 0;
+// *** NEW: We'll keep track of how many sessions are left to reach our yearly goal
+$sessions_goal = 120;
 
+// Count how many attended so far this year
+$stmt = $pdo->prepare("
+    SELECT COUNT(*) AS cnt
+    FROM daily_records
+    WHERE user_id = :uid
+      AND YEAR(record_date) = :yr
+      AND gym_attended = 1
+");
+$stmt->execute([
+    ':uid' => $user_id,
+    ':yr'  => $year
+]);
+$attended_this_year = (int)$stmt->fetchColumn();
+
+// How many are left?
+$sessions_left = max(0, $sessions_goal - $attended_this_year);
 ?>
 <!DOCTYPE html>
 <html>
@@ -96,8 +112,8 @@ $days_sequence_counter = 0;
 <body>
     <h1>Year View - <?php echo $year; ?></h1>
     <p>
-        <a href="year_view.php?year=<?php echo ($year-1); ?>">&lt;&lt; Previous Year</a> |
-        <a href="year_view.php?year=<?php echo ($year+1); ?>">Next Year &gt;&gt;</a> |
+        <a href="year_view.php?year=<?php echo ($year - 1); ?>">&lt;&lt; Previous Year</a> |
+        <a href="year_view.php?year=<?php echo ($year + 1); ?>">Next Year &gt;&gt;</a> |
         <a href="dashboard.php">Dashboard</a>
     </p>
 
@@ -109,7 +125,8 @@ $days_sequence_counter = 0;
         $month_name = $month_start->format('F');
         $days_in_month = (int)$month_start->format('t');
 
-        $first_day_w = (int)$month_start->format('w'); // 0=Sunday, 6=Saturday
+        // 0 = Sunday, 6 = Saturday
+        $first_day_w = (int)$month_start->format('w');
         ?>
         <table class="month-table">
             <tr><th colspan="7"><?php echo $month_name; ?></th></tr>
@@ -122,8 +139,8 @@ $days_sequence_counter = 0;
         while ($day_counter <= $days_in_month) {
             echo "<tr>";
             for ($col = 0; $col < 7; $col++) {
-                if (($day_counter == 1 && $col < $first_day_w)
-                    || $day_counter > $days_in_month) {
+                // If we're before the first day of this month or past last day, blank cell
+                if (($day_counter == 1 && $col < $first_day_w) || ($day_counter > $days_in_month)) {
                     echo "<td></td>";
                 } else {
                     $date_str = sprintf('%04d-%02d-%02d', $year, $month, $day_counter);
@@ -131,27 +148,26 @@ $days_sequence_counter = 0;
 
                     $cell_class = '';
                     $score_display = '';
-                    $session_label = '';   // <--- We'll store "Att #x" or "Rec #y" here
+                    $session_label = '';
 
                     if ($rec) {
-                        if ($rec['gym_attended'] == 1) {
+                        if (!empty($rec['gym_attended'])) {
                             // If attended, override everything with "attended"
                             $cell_class = 'attended';
-
-                            // *** increment the sequence counter & note the label
-                            $days_sequence_counter++;
-                            $session_label = "Att #{$days_sequence_counter}";
-
-                        } elseif ($rec['impossible_day'] == 1) {
+                            // Use sessions_left to label "Att #"
+                            if ($sessions_left > 0) {
+                                $session_label = "Att #{$sessions_left}";
+                                $sessions_left--;
+                            }
+                        } elseif (!empty($rec['impossible_day'])) {
                             $cell_class = 'impossible';
-                        } elseif (!empty($rec['recommended_day'])) {
-                            // recommended day
+                        } elseif (!empty($rec['recommended_day']) && $date_str >= date('Y-m-d')) {
+                            // recommended day in the future
                             $cell_class = 'recommended';
-
-                            // *** increment the sequence counter & note the label
-                            $days_sequence_counter++;
-                            $session_label = "Rec #{$days_sequence_counter}";
-
+                            if ($sessions_left > 0) {
+                                $session_label = "Rec #{$sessions_left}";
+                                $sessions_left--;
+                            }
                         } else {
                             // Otherwise color by day_score
                             $score = (float)($rec['day_score'] ?? 0);
@@ -167,20 +183,18 @@ $days_sequence_counter = 0;
                     }
 
                     echo "<td class=\"{$cell_class}\">";
-                    // Day number in month
                     echo "<div>{$day_counter}</div>";
 
-                    // If we have a day_score to show
+                    // Show day score if we have it
                     if ($score_display !== '') {
                         echo "<div style='font-size:0.8em;'>Score: $score_display</div>";
                     }
-
-                    // If we have a session label (Att # or Rec #)
+                    // Show session label if we have it
                     if ($session_label !== '') {
                         echo "<div style='font-size:0.8em;'><strong>$session_label</strong></div>";
                     }
 
-                    // The "Edit" link for your inline form
+                    // The inline edit link
                     echo "<div class='edit-link' onclick=\"toggleEditForm('$date_str')\">Edit</div>";
                     // Inline form
                     echo "<div id='edit-form-$date_str' class='edit-form'>";
@@ -190,13 +204,13 @@ $days_sequence_counter = 0;
                     $readiness_val = $rec ? ($rec['readiness_score'] ?? '') : '';
                     echo "Rdy: <input type='text' name='readiness_score' value='{$readiness_val}' size='2'><br>";
 
-                    $checked_attended = ($rec && $rec['gym_attended']) ? "checked" : "";
+                    $checked_attended = ($rec && !empty($rec['gym_attended'])) ? "checked" : "";
                     echo "<label><input type='checkbox' name='gym_attended' $checked_attended> Attended</label><br>";
 
-                    $checked_impossible = ($rec && $rec['impossible_day']) ? "checked" : "";
+                    $checked_impossible = ($rec && !empty($rec['impossible_day'])) ? "checked" : "";
                     echo "<label><input type='checkbox' name='impossible_day' $checked_impossible> Impossible</label><br>";
 
-                    $checked_school = ($rec && $rec['is_school_day']) ? "checked" : "";
+                    $checked_school = ($rec && !empty($rec['is_school_day'])) ? "checked" : "";
                     echo "<label><input type='checkbox' name='is_school_day' $checked_school> School?</label><br>";
 
                     echo "<button type='submit'>Save</button>";
@@ -215,6 +229,5 @@ $days_sequence_counter = 0;
     } // end month loop
     ?>
     </div>
-
 </body>
 </html>
