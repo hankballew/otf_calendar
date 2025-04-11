@@ -226,16 +226,25 @@ function calculate_future_day_score($user_id, $date_str, $user_settings, $dow_av
 
 
 /**
- * Updates the recommended_day column for the user so that 
- * the top-scoring future days (enough to reach 120 total) are marked recommended.
+ * update_recommended_days()
+ *
+ * 1) Determine how many sessions the user has already attended this year.
+ * 2) Determine how many recommended future days already exist in the DB.
+ * 3) Figure out how many more recommended days are *actually needed* to reach the goal.
+ * 4) If we have more recommended days than needed, unmark the extras.  <-- This is "step 4"
+ * 5) If we still need more, find new days to mark as recommended, up to the needed count.
+ *
+ * @param int $user_id
+ * @param int $goal  (e.g. 120 sessions/year)
  */
-function update_recommended_days($user_id, $goal) {
-    $pdo = get_db_connection();
+function update_recommended_days($user_id, $goal)
+{
+    // 1) How many sessions has the user already attended *this year*?
+    $pdo  = get_db_connection();
+    $year = date('Y'); // or pass it in as an argument if needed
 
-    // 1) Figure out how many days have already been attended in this year
-    $year = date('Y');  // Or pass it in if you like
     $sql = "
-        SELECT COUNT(*) 
+        SELECT COUNT(*) AS cnt
         FROM daily_records
         WHERE user_id = :uid
           AND YEAR(record_date) = :yr
@@ -246,70 +255,70 @@ function update_recommended_days($user_id, $goal) {
         ':uid' => $user_id,
         ':yr'  => $year
     ]);
-    $attended = (int) $stmt->fetchColumn();
-    
-    // 2) Also see how many recommended days are still in the future for this year
-    //    that haven't been attended yet. We might keep them as recommended if we need them.
+    $attended = (int)$stmt->fetchColumn();  // how many already attended
+
+    // 2) Figure out how many future recommended days currently exist
+    //    (days with recommended_day=1 that haven't been attended or flagged impossible).
+    //    We'll keep them if we still need them, or remove them if they're extras.
     $sql = "
         SELECT daily_record_id, record_date
         FROM daily_records
         WHERE user_id = :uid
           AND YEAR(record_date) = :yr
-          AND record_date >= CURDATE()   -- only future or today's date
+          AND record_date >= CURDATE()   -- only look at future (or today)
           AND recommended_day = 1
-          AND gym_attended = 0          -- if it's already attended, we don't count it
+          AND gym_attended = 0
           AND impossible_day = 0
-        ORDER BY record_date
+        ORDER BY record_date ASC
     ";
     $stmt = $pdo->prepare($sql);
-    $stmt->execute([':uid' => $user_id, ':yr' => $year]);
-    $existing_recs = $stmt->fetchAll();
+    $stmt->execute([
+        ':uid' => $user_id,
+        ':yr'  => $year
+    ]);
+    $existing_recommended = $stmt->fetchAll(); // array of [daily_record_id, record_date...]
 
-    // 3) How many sessions are still needed?
+    // 3) How many total sessions are needed to reach the yearly goal?
     $sessions_needed = $goal - $attended;
     if ($sessions_needed < 0) {
-        $sessions_needed = 0; 
+        $sessions_needed = 0; // if user already exceeded the goal
     }
 
-    // 4) Count how many recommended are already in the future
-    $already_recommended_count = count($existing_recs);
-    
-    // If we still need more recommended days beyond the ones we already have
-    $still_need = $sessions_needed - $already_recommended_count;
+    $already_recommended_count = count($existing_recommended);
 
-    // If $still_need <= 0, that means we've already recommended enough (or more) 
-    // to reach the goal. So we can optionally “unrecommend” any surplus beyond that 
-    // if you want the DB to reflect exactly the required recommended days.
-
-    if ($still_need <= 0) {
-        // We have as many recommended days as we need or more. 
-        // Optionally un-recommend extras:
-        
-        // We only want to keep exactly $sessions_needed recommended days if that’s your preference.
-        // So let's keep the earliest $sessions_needed items from $existing_recs 
-        // and unmark the rest. 
-        // (This is optional if you prefer leaving them recommended in the DB.)
-        
+    // 4) If we already have enough recommended future days to meet the goal,
+    //    we can unmark the *excess* so you don't exceed the goal with recommended days.
+    //    This is the "Step 4" logic you asked about.
+    if ($already_recommended_count >= $sessions_needed) {
+        // If you prefer to keep exactly the earliest $sessions_needed recommended, 
+        // unmark the rest:
         $excess = $already_recommended_count - $sessions_needed;
         if ($excess > 0) {
-            // $excess is how many to set to 0
-            // We want to unmark from the *end* of the array so we keep the earliest ones
-            $excess_recs = array_slice($existing_recs, $sessions_needed);
-            // unmark them
-            foreach ($excess_recs as $row) {
-                $id = $row['daily_record_id'];
+            // We'll keep the earliest $sessions_needed from $existing_recommended,
+            // and unmark the remainder (the "excess").
+            //
+            // array_slice($array, $offset, $length) -> keep [0..($sessions_needed-1)] 
+            // unmark the ones from [$sessions_needed .. end].
+            $excessItems = array_slice($existing_recommended, $sessions_needed);
+
+            foreach ($excessItems as $row) {
+                $id = (int)$row['daily_record_id'];
                 $pdo->query("UPDATE daily_records SET recommended_day=0 WHERE daily_record_id=$id");
             }
         }
 
-        // Then we can return early because we have enough recommended days
+        // Since we already have enough recommended days, we can stop here.
         return;
     }
 
-    // If we do still need more recommended days:
-    // 5) pick new future days, in ascending order by day_score or record_date 
-    //    that are not impossible, not already attended, not recommended.
-    
+    // 5) Otherwise, we need more recommended days.
+    //    $still_needed = how many more recommended days beyond the existing ones
+    $still_needed = $sessions_needed - $already_recommended_count;
+
+    // Let's pick future days that are not recommended or attended or impossible yet.
+    // Then mark them as recommended, up to $still_needed.
+    // For best effect, you might want to order by day_score DESC so the highest scoring
+    // days get recommended first. Alternatively, order by record_date ASC to pick chronologically.
     $sql = "
         SELECT daily_record_id
         FROM daily_records
@@ -320,29 +329,28 @@ function update_recommended_days($user_id, $goal) {
           AND impossible_day = 0
           AND recommended_day = 0
         ORDER BY day_score DESC, record_date ASC 
-        -- or maybe order by day_score DESC so we recommend the highest scores first
+        -- or maybe just ORDER BY record_date ASC if you prefer chronological picking
     ";
     $stmt = $pdo->prepare($sql);
-    $stmt->execute([':uid' => $user_id, ':yr' => $year]);
-    $possible_new_recs = $stmt->fetchAll();
-    
-    // 6) For the next $still_need items in $possible_new_recs, set recommended_day=1
-    //    If we run out, we do as many as we can.
-    
-    $assigned_count = 0;
-    foreach ($possible_new_recs as $row) {
-        if ($assigned_count >= $still_need) {
+    $stmt->execute([
+        ':uid' => $user_id,
+        ':yr'  => $year
+    ]);
+    $candidates = $stmt->fetchAll(); // potential new recommended days
+
+    $assignedCount = 0;
+    foreach ($candidates as $row) {
+        if ($assignedCount >= $still_needed) {
             break;
         }
-        $id = $row['daily_record_id'];
+        $id = (int)$row['daily_record_id'];
         $pdo->query("UPDATE daily_records SET recommended_day=1 WHERE daily_record_id=$id");
-        $assigned_count++;
+        $assignedCount++;
     }
-    
-    // 7) Optionally, if we didn't find enough "good" days, then the user won't have enough recommended
-    //    to reach the goal, but that's the user's data reality. 
-    //    Or you handle it differently, e.g. by marking some days as recommended anyway.
+
+    // Done—any leftover days remain un-recommended because we only needed $still_needed more.
 }
+
 
 
 
